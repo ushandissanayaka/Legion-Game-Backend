@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "LEGION FPS multiplayer game backend",
-  "main": "server/dist/server.js",
+  "main": "server.js",
   "scripts": {
     "dev": "npm --prefix server run dev",
     "build": "tsc -p server/tsconfig.json",
