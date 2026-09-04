@@ -164,6 +164,8 @@ export function registerSocketHandlers(
   socket.on(SOCKET_EVENTS.PLAYER_SHOOT, (payload: {
     roomId: string;
     targetId: string | null;
+    playerId?: string;
+    targetPlayerId?: string;
     origin: { x: number; y: number; z: number };
     direction: { x: number; y: number; z: number };
     weaponType?: string;
@@ -171,7 +173,8 @@ export function registerSocketHandlers(
     timestamp?: number;
   }) => {
     try {
-      const { roomId, targetId, origin, direction } = payload;
+      const { roomId, origin, direction } = payload;
+      const requestedTargetId = payload.targetId || payload.targetPlayerId || payload.playerId || null;
 
       // Validate and clamp damage per weapon type (server-authoritative)
       const WEAPON_MAX: Record<string, number> = {
@@ -194,9 +197,9 @@ export function registerSocketHandlers(
       if (!Number.isFinite(shotTimestamp) || shotTimestamp > now + 1000 || now - shotTimestamp > NETWORK_LAG_TOLERANCE_MS) return;
 
       // Don't shoot yourself
-      if (targetId === socket.id) return;
+      if (requestedTargetId === socket.id) return;
 
-      let resolvedTargetId = targetId && targetId !== socket.id ? targetId : null;
+      let resolvedTargetId = requestedTargetId && requestedTargetId !== socket.id ? requestedTargetId : null;
       let target = resolvedTargetId ? playerManager.getPlayer(resolvedTargetId) : undefined;
 
       // Resolve hits server-side when the client does not provide a target id.
@@ -254,6 +257,8 @@ export function registerSocketHandlers(
       const { newHealth, died } = playerManager.applyDamage(finalTargetId, validatedDamage);
       const targetPlayer = playerManager.getPlayer(finalTargetId);
       if (!targetPlayer) return;
+
+      console.log(`[Combat] ${shooter.name} hit ${targetPlayer.name} for ${validatedDamage} (${newHealth} HP remaining)`);
 
       // Update room's player map
       const roomPlayer = room.players.get(finalTargetId);
