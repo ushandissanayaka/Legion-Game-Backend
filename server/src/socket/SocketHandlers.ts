@@ -18,20 +18,21 @@ function vec3Dot(a: { x: number; y: number; z: number }, b: { x: number; y: numb
 }
 
 // Ray-sphere intersection for basic server-side shot validation
-function rayIntersectsSphere(
+function raySphereDistance(
   origin: { x: number; y: number; z: number },
   dir: { x: number; y: number; z: number },
   sphereCenter: { x: number; y: number; z: number },
   radius: number
-): boolean {
+): number | null {
   const oc = { x: origin.x - sphereCenter.x, y: origin.y - sphereCenter.y, z: origin.z - sphereCenter.z };
   const a = vec3Dot(dir, dir);
+  if (a === 0) return null;
   const b = 2.0 * vec3Dot(oc, dir);
   const c = vec3Dot(oc, oc) - radius * radius;
   const discriminant = b * b - 4 * a * c;
-  if (discriminant < 0) return false;
+  if (discriminant < 0) return null;
   const t = (-b - Math.sqrt(discriminant)) / (2.0 * a);
-  return t >= 0 && t <= 150; // max shoot distance
+  return t >= 0 && t <= 150 ? t : null; // max shoot distance
 }
 
 export function registerSocketHandlers(
@@ -167,10 +168,10 @@ export function registerSocketHandlers(
     direction: { x: number; y: number; z: number };
     weaponType?: string;
     damage?: number;
-    timestamp: number;
+    timestamp?: number;
   }) => {
     try {
-      const { roomId, targetId, origin, direction, timestamp } = payload;
+      const { roomId, targetId, origin, direction } = payload;
 
       // Validate and clamp damage per weapon type (server-authoritative)
       const WEAPON_MAX: Record<string, number> = {
@@ -180,7 +181,7 @@ export function registerSocketHandlers(
       };
       const claimedDamage = typeof payload.damage === 'number' ? payload.damage : 25;
       const weaponKey = payload.weaponType && WEAPON_MAX[payload.weaponType] ? payload.weaponType : 'assault';
-      const validatedDamage = Math.min(claimedDamage, WEAPON_MAX[weaponKey]);
+      const validatedDamage = Math.max(1, Math.min(claimedDamage, WEAPON_MAX[weaponKey]));
       const room = gameManager.getRoom(roomId);
       if (!room || room.gameState !== GameStateEnum.PLAYING) return;
 
@@ -189,15 +190,45 @@ export function registerSocketHandlers(
 
       // Validate timestamp (reject shots too old)
       const now = Date.now();
-      if (!Number.isFinite(timestamp) || timestamp > now + 1000 || now - timestamp > NETWORK_LAG_TOLERANCE_MS) return;
-
-      // If no target claimed, nothing to process (visual only)
-      if (!targetId) return;
+      const shotTimestamp = typeof payload.timestamp === 'number' ? payload.timestamp : now;
+      if (!Number.isFinite(shotTimestamp) || shotTimestamp > now + 1000 || now - shotTimestamp > NETWORK_LAG_TOLERANCE_MS) return;
 
       // Don't shoot yourself
       if (targetId === socket.id) return;
 
-      const target = playerManager.getPlayer(targetId);
+      let resolvedTargetId = targetId && targetId !== socket.id ? targetId : null;
+      let target = resolvedTargetId ? playerManager.getPlayer(resolvedTargetId) : undefined;
+
+      // Resolve hits server-side when the client does not provide a target id.
+      if (!target || !target.alive || target.roomId !== roomId) {
+        const directionLength = vec3Length(direction);
+        if (!origin || !direction || ![origin.x, origin.y, origin.z, direction.x, direction.y, direction.z].every(Number.isFinite)
+          || directionLength === 0) return;
+
+        const normalizedDir = {
+          x: direction.x / directionLength,
+          y: direction.y / directionLength,
+          z: direction.z / directionLength,
+        };
+        let nearestDistance = Infinity;
+        for (const candidate of room.players.values()) {
+          if (candidate.id === socket.id || !candidate.alive) continue;
+          const distance = raySphereDistance(
+            origin,
+            normalizedDir,
+            { x: candidate.position.x, y: candidate.position.y + 1, z: candidate.position.z },
+            PLAYER_HITBOX_RADIUS * 2.5
+          );
+          if (distance !== null && distance < nearestDistance) {
+            nearestDistance = distance;
+            resolvedTargetId = candidate.id;
+            target = candidate;
+          }
+        }
+      }
+
+      if (!resolvedTargetId || !target || !target.alive || target.roomId !== roomId) return;
+      const finalTargetId = resolvedTargetId;
       if (!target || !target.alive || target.roomId !== roomId) return;
 
       // Basic server-side validation: check if ray comes close to target's position
@@ -207,7 +238,12 @@ export function registerSocketHandlers(
         return { x: direction.x / len, y: direction.y / len, z: direction.z / len };
       })();
 
-      const isHit = rayIntersectsSphere(origin, normalizedDir, target.position, PLAYER_HITBOX_RADIUS * 2.5);
+      const isHit = raySphereDistance(
+        origin,
+        normalizedDir,
+        { x: target.position.x, y: target.position.y + 1, z: target.position.z },
+        PLAYER_HITBOX_RADIUS * 2.5
+      ) !== null;
       if (!isHit) {
         // Shot didn't actually hit on server — could be lag, so we trust with leniency
         // For MVP: allow if claimed hit (anti-cheat can be improved later)
@@ -215,12 +251,12 @@ export function registerSocketHandlers(
       }
 
       // Apply damage (server-validated amount)
-      const { newHealth, died } = playerManager.applyDamage(targetId, validatedDamage);
-      const targetPlayer = playerManager.getPlayer(targetId);
+      const { newHealth, died } = playerManager.applyDamage(finalTargetId, validatedDamage);
+      const targetPlayer = playerManager.getPlayer(finalTargetId);
       if (!targetPlayer) return;
 
       // Update room's player map
-      const roomPlayer = room.players.get(targetId);
+      const roomPlayer = room.players.get(finalTargetId);
       if (roomPlayer) {
         roomPlayer.health = newHealth;
         roomPlayer.alive = !died;
@@ -228,7 +264,7 @@ export function registerSocketHandlers(
 
       // Broadcast hit
       io.to(roomId).emit(SOCKET_EVENTS.PLAYER_HIT, {
-        targetId,
+        targetId: finalTargetId,
         shooterId: socket.id,
         damage: validatedDamage,
         newHealth,
@@ -238,18 +274,18 @@ export function registerSocketHandlers(
         playerManager.addKill(socket.id);
         const shooterRoomPlayer = room.players.get(socket.id);
         if (shooterRoomPlayer) shooterRoomPlayer.kills += 1;
-        const victimRoomPlayer = room.players.get(targetId);
+        const victimRoomPlayer = room.players.get(finalTargetId);
         if (victimRoomPlayer) victimRoomPlayer.deaths += 1;
 
         io.to(roomId).emit(SOCKET_EVENTS.PLAYER_DEATH, {
-          victimId: targetId,
+          victimId: finalTargetId,
           killerId: socket.id,
           killerName: shooter.name,
           victimName: target.name,
         });
 
         // Schedule respawn
-        room.scheduleRespawn(targetId);
+        room.scheduleRespawn(finalTargetId);
       }
     } catch (err) {
       console.error('playerShoot error:', err);
