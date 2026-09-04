@@ -163,17 +163,19 @@ export function registerSocketHandlers(
   // ──────────────────────────────────────────────────────────
   socket.on(SOCKET_EVENTS.PLAYER_SHOOT, (payload: {
     roomId: string;
-    targetId: string | null;
+    targetId?: string | null;
     playerId?: string;
     targetPlayerId?: string;
-    origin: { x: number; y: number; z: number };
-    direction: { x: number; y: number; z: number };
+    origin?: { x: number; y: number; z: number };
+    direction?: { x: number; y: number; z: number };
     weaponType?: string;
     damage?: number;
     timestamp?: number;
   }) => {
     try {
-      const { roomId, origin, direction } = payload;
+      const roomId = typeof payload?.roomId === 'string' ? payload.roomId.toUpperCase().trim() : '';
+      const origin = payload?.origin;
+      const direction = payload?.direction;
       const requestedTargetId = payload.targetId || payload.targetPlayerId || payload.playerId || null;
 
       // Validate and clamp damage per weapon type (server-authoritative)
@@ -182,7 +184,9 @@ export function registerSocketHandlers(
         shotgun: 18,  // per pellet, 8 pellets = 144 max but single pellet validated
         sniper: 100,
       };
-      const claimedDamage = typeof payload.damage === 'number' ? payload.damage : 25;
+      const claimedDamage = typeof payload.damage === 'number' && Number.isFinite(payload.damage)
+        ? payload.damage
+        : 25;
       const weaponKey = payload.weaponType && WEAPON_MAX[payload.weaponType] ? payload.weaponType : 'assault';
       const validatedDamage = Math.max(1, Math.min(claimedDamage, WEAPON_MAX[weaponKey]));
       const room = gameManager.getRoom(roomId);
@@ -204,6 +208,7 @@ export function registerSocketHandlers(
 
       // Resolve hits server-side when the client does not provide a target id.
       if (!target || !target.alive || target.roomId !== roomId) {
+        if (!origin || !direction) return;
         const directionLength = vec3Length(direction);
         if (!origin || !direction || ![origin.x, origin.y, origin.z, direction.x, direction.y, direction.z].every(Number.isFinite)
           || directionLength === 0) return;
@@ -233,25 +238,6 @@ export function registerSocketHandlers(
       if (!resolvedTargetId || !target || !target.alive || target.roomId !== roomId) return;
       const finalTargetId = resolvedTargetId;
       if (!target || !target.alive || target.roomId !== roomId) return;
-
-      // Basic server-side validation: check if ray comes close to target's position
-      const normalizedDir = (() => {
-        const len = vec3Length(direction);
-        if (len === 0) return direction;
-        return { x: direction.x / len, y: direction.y / len, z: direction.z / len };
-      })();
-
-      const isHit = raySphereDistance(
-        origin,
-        normalizedDir,
-        { x: target.position.x, y: target.position.y + 1, z: target.position.z },
-        PLAYER_HITBOX_RADIUS * 2.5
-      ) !== null;
-      if (!isHit) {
-        // Shot didn't actually hit on server — could be lag, so we trust with leniency
-        // For MVP: allow if claimed hit (anti-cheat can be improved later)
-        // We'll allow 50% tolerance for now
-      }
 
       // Apply damage (server-validated amount)
       const { newHealth, died } = playerManager.applyDamage(finalTargetId, validatedDamage);
