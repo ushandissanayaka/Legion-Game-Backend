@@ -8,6 +8,10 @@ import { registerSocketHandlers } from './socket/SocketHandlers';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || CLIENT_URL)
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 const app = express();
 const httpServer = createServer(app);
@@ -15,7 +19,7 @@ const httpServer = createServer(app);
 // CORS config
 const io = new Server(httpServer, {
   cors: {
-    origin: [CLIENT_URL, 'http://localhost:5173', 'http://localhost:4173'],
+    origin: ALLOWED_ORIGINS,
     methods: ['GET', 'POST'],
     credentials: true,
   },
@@ -24,7 +28,7 @@ const io = new Server(httpServer, {
 });
 
 app.use(cors({
-  origin: [CLIENT_URL, 'http://localhost:5173'],
+  origin: ALLOWED_ORIGINS,
   credentials: true,
 }));
 app.use(express.json());
@@ -37,6 +41,10 @@ app.get('/', (_req, res) => {
     rooms: gameManager.getAllRooms().length,
     uptime: process.uptime(),
   });
+});
+
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok' });
 });
 
 // Initialize managers
