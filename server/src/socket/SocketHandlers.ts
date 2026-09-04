@@ -4,7 +4,6 @@ import { PlayerManager } from '../players/PlayerManager';
 import {
   SOCKET_EVENTS,
   PLAYER_HITBOX_RADIUS,
-  NETWORK_LAG_TOLERANCE_MS,
   GameStateEnum,
 } from '../types/game';
 
@@ -166,6 +165,10 @@ export function registerSocketHandlers(
     targetId?: string | null;
     playerId?: string;
     targetPlayerId?: string;
+    victimId?: string;
+    hitPlayerId?: string;
+    hitTargetId?: string;
+    target?: string | { id?: string } | null;
     origin?: { x: number; y: number; z: number };
     direction?: { x: number; y: number; z: number };
     weaponType?: string;
@@ -176,7 +179,22 @@ export function registerSocketHandlers(
       const roomId = typeof payload?.roomId === 'string' ? payload.roomId.toUpperCase().trim() : '';
       const origin = payload?.origin;
       const direction = payload?.direction;
-      const requestedTargetId = payload.targetId || payload.targetPlayerId || payload.playerId || null;
+      // Different client builds have used different target field names.  Prefer
+      // the explicit target fields; `playerId` is retained only for older
+      // clients that used it to mean the player that was hit.
+      const targetFromObject = typeof payload.target === 'object' ? payload.target?.id : payload.target;
+      const targetCandidates = [
+        payload.targetId,
+        payload.targetPlayerId,
+        payload.victimId,
+        payload.hitPlayerId,
+        payload.hitTargetId,
+        targetFromObject,
+        payload.playerId,
+      ];
+      const requestedTargetId = targetCandidates.find((id): id is string =>
+        typeof id === 'string' && id.length > 0 && id !== socket.id
+      ) ?? null;
 
       // Validate and clamp damage per weapon type (server-authoritative)
       const WEAPON_MAX: Record<string, number> = {
@@ -195,15 +213,16 @@ export function registerSocketHandlers(
       const shooter = playerManager.getPlayer(socket.id);
       if (!shooter || shooter.roomId !== roomId || !room.players.has(socket.id) || !shooter.alive) return;
 
-      // Validate timestamp (reject shots too old)
+      // A shot timestamp is useful for diagnostics, but must not decide whether
+      // a hit counts. Network delay regularly exceeds a small fixed tolerance,
+      // and some clients use a monotonic (non-epoch) clock. The server already
+      // validates the shooter, room, target and damage below.
       const now = Date.now();
       const shotTimestamp = typeof payload.timestamp === 'number' ? payload.timestamp : now;
-      if (!Number.isFinite(shotTimestamp) || shotTimestamp > now + 1000 || now - shotTimestamp > NETWORK_LAG_TOLERANCE_MS) return;
+      if (!Number.isFinite(shotTimestamp) || shotTimestamp > now + 30_000) return;
 
       // Don't shoot yourself
-      if (requestedTargetId === socket.id) return;
-
-      let resolvedTargetId = requestedTargetId && requestedTargetId !== socket.id ? requestedTargetId : null;
+      let resolvedTargetId = requestedTargetId;
       let target = resolvedTargetId ? playerManager.getPlayer(resolvedTargetId) : undefined;
 
       // Resolve hits server-side when the client does not provide a target id.
