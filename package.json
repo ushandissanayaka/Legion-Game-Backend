@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "npm --prefix server run dev",
     "build": "tsc -p server/tsconfig.json",
-    "start": "node server/dist/server.js"
+    "start": "tsc -p server/tsconfig.json && node server/dist/server.js"
   },
   "engines": {
     "node": ">=18.0.0"
