@@ -223,7 +223,7 @@ export function registerSocketHandlers(
 
       // Don't shoot yourself
       let resolvedTargetId = requestedTargetId;
-      let target = resolvedTargetId ? playerManager.getPlayer(resolvedTargetId) : undefined;
+      let target = resolvedTargetId ? room.players.get(resolvedTargetId) : undefined;
 
       // Resolve hits server-side when the client does not provide a target id.
       if (!target || !target.alive || target.roomId !== roomId) {
@@ -261,16 +261,14 @@ export function registerSocketHandlers(
       // Apply damage (server-validated amount)
       const { newHealth, died } = playerManager.applyDamage(finalTargetId, validatedDamage);
       const targetPlayer = playerManager.getPlayer(finalTargetId);
-      if (!targetPlayer) return;
+      const roomPlayer = room.players.get(finalTargetId);
+      if (!targetPlayer || !roomPlayer) return;
 
       console.log(`[Combat] ${shooter.name} hit ${targetPlayer.name} for ${validatedDamage} (${newHealth} HP remaining)`);
 
       // Update room's player map
-      const roomPlayer = room.players.get(finalTargetId);
-      if (roomPlayer) {
-        roomPlayer.health = newHealth;
-        roomPlayer.alive = !died;
-      }
+      roomPlayer.health = newHealth;
+      roomPlayer.alive = !died;
 
       // Broadcast hit
       io.to(roomId).emit(SOCKET_EVENTS.PLAYER_HIT, {
@@ -284,8 +282,6 @@ export function registerSocketHandlers(
         playerManager.addKill(socket.id);
         const shooterRoomPlayer = room.players.get(socket.id);
         if (shooterRoomPlayer) shooterRoomPlayer.kills += 1;
-        const victimRoomPlayer = room.players.get(finalTargetId);
-        if (victimRoomPlayer) victimRoomPlayer.deaths += 1;
 
         io.to(roomId).emit(SOCKET_EVENTS.PLAYER_DEATH, {
           victimId: finalTargetId,
