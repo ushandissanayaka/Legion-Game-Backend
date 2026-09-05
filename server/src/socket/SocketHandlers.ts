@@ -219,7 +219,11 @@ export function registerSocketHandlers(
       // validates the shooter, room, target and damage below.
       const now = Date.now();
       const shotTimestamp = typeof payload.timestamp === 'number' ? payload.timestamp : now;
-      if (!Number.isFinite(shotTimestamp) || shotTimestamp > now + 30_000) return;
+      // We log if the timestamp is completely invalid or too far in the future, but we DO NOT reject the shot.
+      // Clock drift between client and server (especially after deployment) can cause valid shots to appear in the future.
+      if (!Number.isFinite(shotTimestamp) || shotTimestamp > now + 30_000) {
+        console.warn(`[Combat] Suspicious shot timestamp from ${shooter.name}: ${shotTimestamp} (server now: ${now})`);
+      }
 
       // Don't shoot yourself
       let resolvedTargetId = requestedTargetId;
